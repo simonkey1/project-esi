@@ -1,0 +1,1397 @@
+---
+title: "Análisis de Ingresos por Género - ESI"
+output:
+  html_document:
+    theme: flatly
+    toc: true
+    toc_float: true
+---
+
+# Resumen
+
+
+
+Hola, mi nombre es Simón y este es un proyecto propio realizado a partir de las bases de datos de la Encuesta Suplementaria de Ingresos (ESI). Si bien el objetivo principal es analizar de manera descriptiva, inferencial y una interpretación sociológica, el foco está también en el uso de R como medio para obtener toda la información. 
+
+En este proyecto se llevó a cabo una manipulación de múltiples dataframe, filtrando valores perdidos, recodificando valores en distintas tipos de variables (cuantitativas, nominales e ordinales). Asimismo, se manipuló 6 bases de datos simultáneamente a través de  bucles for, lo cual permitió optimizar el código con buenas prácticas de programación, esto incluye el asignar nuevos objetos que faciliten la legibilidad del código, y operaciones matemáticas para mejorar la presentación principalmente de los ingresos principales y su interación con otras variables. 
+
+El presente enfoque describe los ingresos de la Ocupación principal por sexo y las brechas de género dentro del mercado laboral chileno, tomando como punto de partida las principales estimaciones publicadas por esta encuesta. Por otra parte, señalar el uso de antecedentes previos para delimitar el estudios, tales como los informes de la Organización Internacional del Trabajo (OIT), como también datos del Grupo Banco Mundial, entre otros.
+
+Cabe destacar que el presente proyecto está aún en proceso de su construcción, por lo que su estructura difiere del formato estándar de introducción, desarrollo, conclusión. Me gustaría mencionar que existen más variables en el análisis final, tales como los análisis entre Sectores Económicos (Primaria, Secundaria y Terciaria) según sexo e ingresos principales, como también el análisis según Grupo de Ocupación (Directivos, Profesionales, Técnicos, etc. ). 
+
+Hasta ahora, el contenido se divide en 4 secciones: 
+
+-Preparación de las bases de datos para su manipulación
+
+-Análisis descriptivo y bivariado de la Encuesta más actual (2022)
+
+-Evolución de las variables relevantes en el tiempo
+
+Espero que les guste y mencionarles que cualquier retroalimentación es siempre bienvenida.
+
+
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+### Inicio
+
+```{r librerias}
+# Cargar paquetes necesarios
+
+library(prettydoc)
+library(tidyverse)
+library(haven)
+library(wesanderson)
+library(grid)
+library(psych)
+library(forcats)
+library(scales) 
+library(knitr)
+library(kableExtra)
+library(broom)
+
+
+
+```
+
+
+#Carga de las bases de datos
+
+### ESI 2017-2022
+Necesitamos darle un formato adecuado a cada dataframe. Realizamos un bucle con lapply, leyendo cada archivo .sav, que empiece con esi, luego el año sin espacios y el .sav Asimismo, seleccionamos las columnas a utilizar en el análisis.
+
+#### Tratamiento de las variables
+
+
+```{r load the data}
+#Cargamos los datasets
+años <- 2017:2022
+data_list <- lapply(años, function(año) read_sav(paste0("esi", año, ".sav")))
+
+# Se seleccionan las columnas relevantes: sexo, ocupación, ingresos, etc.
+data_list <- lapply(data_list, function(df) {
+  df %>% 
+    select(any_of(c("sexo", "ocup_ref", "ing_t_p", "c2_1_3", "cise", "categoria_ocupacion", "categoria_ocupacional"))) %>%
+    mutate(
+      ing_t_p = as.numeric(ing_t_p),
+      ocup_ref = as.factor(ocup_ref),
+      sexo = as.factor(sexo),
+      c2_1_3 = as.numeric(c2_1_3),
+      horas_mensuales = c2_1_3 * 4.33,
+      ingreso_hora = ifelse(ing_t_p > 0, ing_t_p / horas_mensuales, NA),
+    ) %>% rename(cise = any_of(c("cise", "categoria_ocupacional", "categoria_ocupacion")))
+})
+
+  data_list <- lapply(data_list, function(df){
+    df %>% mutate(cise = case_when(
+        cise %in% c(1) ~  1,
+        cise %in% c(2) ~ 2,
+        cise %in% c(3,4) ~ 3,
+        cise %in% c(5,6) ~ 4,
+        cise %in% c(0, 7) ~ NA
+    ))
+  })
+  
+  
+  data_list <- lapply(data_list, function(df) {
+    df %>% filter(!is.na(cise))
+  })
+
+# Asignar de vuelta los dataframes a sus nombres originales
+for (i in seq_along(años)) {
+  assign(paste0("esi_", años[i]), data_list[[i]])
+}
+
+# Seleccionar ocupados al menos 1 mes trabajando
+ocupados_list <- lapply(data_list, function(df) {
+  df %>% filter(ocup_ref == "1")
+})
+
+ocupados_list <- lapply(ocupados_list, function(df) {
+  df %>% filter(ing_t_p <= 3000000)
+})
+
+ocupados_asalariados_list <- lapply(ocupados_list, function(df) {
+  df %>% filter(ocup_ref == "1") %>% filter(cise == 3)
+})
+
+# Crear bases de datos divididas por sexo
+ocupados_hombres_list <- lapply(ocupados_list, function(df) {
+  df %>% filter(sexo == 1)
+})
+ocupados_hombres_list_asalariados <- lapply(ocupados_asalariados_list, function(df) {
+  df %>% filter(sexo == 1)
+})
+
+ocupados_mujeres_list <- lapply(ocupados_list, function(df) {
+  df %>% filter(sexo == 2) 
+})
+ocupados_mujeres_list_asalariados <- lapply(ocupados_asalariados_list, function(df) {
+  df %>% filter(sexo == 2) 
+})
+
+
+
+palette <- c("#4DAF4A", "#377EB8")
+
+```
+
+### ESI 2022
+
+Tenemos cargadas cada base de datos, sin embargo, para representar los valores únicamente del año 2022, es necesario realizar un tratamiento personalizado para este período.
+
+#### Tratamiento de las variables
+
+```{r}
+
+esi_2022_actual <- read_sav("esi2022.sav") %>% 
+  select(sexo, ocup_ref, ing_t_p, tramo_edad, edad, region, cine, b1, categoria_ocupacion, r_p_rev4cl_caenes
+) %>% 
+                  mutate(
+                    ing_t_p = as.numeric(ing_t_p),
+                    ocup_ref = as.factor(ocup_ref),
+                    sexo = as.factor(sexo),
+                    edad = as.numeric(edad),
+                    tramo_edad = as.numeric(tramo_edad),
+                    region = as.numeric(region),
+                    cine = as.numeric(cine),
+                    b1 = as.factor(b1),
+                    categoria_ocupacion = as.numeric(categoria_ocupacion),
+                    r_p_rev4cl_caenes = as.numeric(r_p_rev4cl_caenes)
+                  )
+esi_2022_ocupados <- esi_2022_actual %>% filter(ocup_ref == 1) %>% mutate(
+   sexo_categorias = case_when(
+      sexo == 1 ~ "Hombres",
+      sexo == 2 ~ "Mujeres"
+    )
+  )
+
+esi_2022_ocupados_bivariado <- esi_2022_actual %>% filter(ocup_ref == 1) %>% mutate(
+   sexo_categorias = case_when(
+      sexo == 1 ~ "Hombres",
+      sexo == 2 ~ "Mujeres"
+    )
+  )
+
+
+
+```
+
+
+
+#Análisis Descriptivo ESI 2022
+
+
+Cabe destacar que el análisis aún está en proceso de terminar, por lo que  está sujeto a modificaciones. 
+
+Creamos las bases de datos segun sexo
+
+```{r}
+ocupados_hombres_2022 <- esi_2022_ocupados %>% filter(sexo == "Hombres")
+
+ocupados_mujeres_2022 <- esi_2022_ocupados %>% filter(sexo == "Mujeres")
+```
+
+
+
+
+### Sexo
+```{r}
+
+
+moda_sexo <- names(sort(table(esi_2022_ocupados$sexo_categorias), decreasing = TRUE))[1]
+
+kable(moda_sexo, caption = "Estadísticos Descriptivos de Ingresos Principales, ESI 2022")
+
+
+sexo_counts <- esi_2022_ocupados %>%
+  count(sexo_categorias) %>%
+  mutate(prop = n / sum(n))
+
+labels <- labs(title = "Proporción de hombres y mujeres ESI 2022",
+       caption = "Elaboración propia en base a INE, Encuesta Suplementaria de Ingresos, 2022.",
+       fill = "Sexo") 
+
+diseño_pie <- theme(
+  legend.position = "none",
+  plot.background = element_rect(fill = "#F5F5F5", color = NA),  # Fondo del plot
+  panel.background = element_rect(fill = "#F5F5F5", color = NA), # Fondo del panel
+  panel.border = element_blank(),  # Eliminar el borde del panel
+  panel.grid.major = element_blank(),  # Eliminar la cuadrícula mayor
+  panel.grid.minor = element_blank(),
+  plot.title = element_text(color = "#015D3F", size = 15, hjust = 0.5, face = "bold"),
+  legend.title = element_text(color = "#015D3F", face = "bold"),
+  legend.text = element_text(color = "#015D3F", face = "bold", size = 6),
+  plot.caption = element_text(hjust = 0, color = "#015D3F", face = "italic"),
+  legend.background = element_rect(fill = "#F5F5F5", color = NA)  # Fondo de la leyenda
+)
+        
+
+ggplot(sexo_counts, aes(x = sexo_categorias, y = prop, fill = sexo_categorias)) +
+  geom_bar(stat = "identity") +
+   geom_text(aes(label = percent(prop, accuracy = 0.1)), 
+            position = position_dodge(width = 0.7),
+            vjust = 8,  # Ajuste vertical para las etiquetas
+            size = 4, 
+            fontface = "bold",
+            color = "white") +
+  scale_fill_manual(values = palette)+
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(title = "Proporción de Hombres y Mujeres",
+       x = "Sexo",
+       y = "Proporción",
+      fill = "Sexo") +
+  theme_minimal() +
+theme(
+  plot.background = element_rect(fill = "#F5F5F5", color = NA)
+)
+```
+### Tramos de Ingresos Principales según Sueldos Mínimos(2022)
+```{r}
+esi_2022_ocupados <- esi_2022_ocupados %>%
+  mutate(
+    ingreso_tramos = case_when(
+      ing_t_p <= 350000 ~ "1SM o menos",
+      ing_t_p > 350000 & ing_t_p <= 700000 ~ "Hasta 2SM",
+      ing_t_p > 700000 & ing_t_p <= 1050000~ "Hasta 3SM",
+      ing_t_p > 1050000 & ing_t_p <= 2100000~ "Hasta 6SM",
+      ing_t_p > 2100000 ~ "Más de 8SM (2.1millones+)"
+    )
+  ) %>% 
+  filter(!is.na(ingreso_tramos))
+
+moda_tramos_ingresos <- names(sort(table(esi_2022_ocupados$ingreso_tramos), decreasing = TRUE))[1]
+
+kable(moda_tramos_ingresos, caption = "Moda Ingreso según Sueldos Mínimos(SM)")
+
+orden_ingreso_tramos <- c("1SM o menos","Hasta 2SM",
+"Hasta 3SM",
+"Hasta 6SM",
+"Más de 8SM (2.1millones+)")
+
+
+esi_2022_ocupados$ingreso_tramos <- factor(esi_2022_ocupados$ingreso_tramos, levels = orden_ingreso_tramos)
+
+tc_tramos_ingresos <- table(esi_2022_ocupados$sexo_categorias, esi_2022_ocupados$ingreso_tramos) 
+
+
+tc_tramos_ingresos_relativa <- prop.table(tc_tramos_ingresos)
+
+
+
+tc_tramos_ingresos_relativa%>%
+  as.data.frame() %>%
+  mutate(Freq = scales::percent(Freq, accuracy = 0.1)) %>%
+  kable("html", col.names = c("Sexo", "Ingreso en SM(Sueldos Minimos)", "Proporción"), align = "c") %>%
+  kable_styling(full_width = FALSE)
+
+esi_2022_ocupados <-  esi_2022_ocupados %>% filter(ing_t_p <= 3500000)
+
+esi_2022_ingresos_tramos_prop <- esi_2022_ocupados %>%
+  group_by(ingreso_tramos, sexo_categorias) %>%
+  summarise(count = n()) %>%
+  mutate(proporcion = count / sum(count)) %>%
+  ungroup()
+
+ggplot(esi_2022_ingresos_tramos_prop, aes(x = ingreso_tramos, y = proporcion, fill = sexo_categorias)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.7) +  # Usar position = "dodge" para dividir las barras
+  geom_text(aes(label = percent(proporcion, accuracy = 0.1)), 
+            position = position_dodge(width = 0.7),
+            vjust = -0.5,  # Ajuste vertical para las etiquetas
+            size = 4, 
+            fontface = "bold",
+            color = "black") +  # Cambiar el color de las etiquetas a negro
+  labs(title = "Distribución según Ingreso en Tramos de Sueldos Mínimos (SM), por Sexo ESI 2022",
+       x = "Tramo de Ingreso",
+       y = "Proporción",
+       fill = "Sexo") +
+  scale_fill_manual(values = palette) +  # Colores personalizados
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +  # Formato de etiquetas en Y como porcentaje
+  theme_minimal()
+
+
+```
+
+### Nivel Educativo
+```{r}
+esi_2022_ocupados <- esi_2022_ocupados %>% mutate(cine_categorias = case_when(
+  cine %in% c(3,4) ~ "Primaria",
+  cine %in% c(5) ~ "Secundaria",
+  cine %in% c(6) ~ "Técnica",
+  cine %in% c(7) ~ "Universitaria",
+  cine %in% c(8,9) ~ "Postgrados",
+  cine %in% c(999, 1) ~ NA
+))
+
+esi_2022_ocupados <- esi_2022_ocupados %>%
+  filter(!is.na(cine_categorias))
+
+moda_cine <- names(sort(table(esi_2022_ocupados$cine_categorias), decreasing = TRUE))[1]
+
+kable(moda_cine, caption = "Estadísticos Descriptivos de Nivel Educativo, ESI 2022")
+
+orden_cine <- c("Primaria", "Secundaria", "Técnica", "Universitaria", "Postgrados")
+
+esi_2022_ocupados$cine_categorias <- factor(esi_2022_ocupados$cine_categorias, levels = orden_cine)
+
+tabla_contingencia_cine <- table(esi_2022_ocupados$cine_categorias, esi_2022_ocupados$sexo_categorias) 
+
+tabla_contingencia_cine_relativa <- prop.table(tabla_contingencia_cine)
+
+tabla_contingencia_cine_relativa%>%
+  as.data.frame() %>%
+  mutate(Freq = scales::percent(Freq, accuracy = 0.1)) %>%
+  kable("html", col.names = c("Nivel Educativo", "Sexo", "Proporción"), align = "c") %>%
+  kable_styling(full_width = FALSE)
+
+esi_2022_cine_prop <- esi_2022_ocupados %>%
+  group_by(cine_categorias, sexo_categorias) %>%
+  summarise(count = n())  %>%
+  mutate(prop = count / sum(count)) %>% 
+  ungroup()
+
+ggplot(esi_2022_cine_prop, aes(x = cine_categorias, y = prop, fill = sexo_categorias)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.7) +
+  geom_text(aes(label = scales::percent(prop, accuracy = 0.1)), 
+            position = position_dodge(width = 0.7),
+            vjust = 4,
+            size = 3, 
+            fontface = "bold",
+            color = "white") +
+  labs(title = "Distribución de Nivel Educativo por Sexo ESI 2022",
+       x = "Tramo de Edad",
+       y = "Proporción",
+       fill = "Sexo") +
+  scale_fill_manual(values = palette) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  theme_minimal()
+
+
+```
+### Ingresos Principales 
+```{r}
+
+
+esi_2022_ingresos_filtrados <-  esi_2022_ocupados %>% filter(ing_t_p <= 3500000)
+
+#Datos con ing_t_p <= $3.500.000
+estadisticas_ingresos <- esi_2022_ingresos_filtrados  %>%
+  summarise(
+    Promedio = round(mean(ing_t_p, trim = 0.05, na.rm = TRUE)),
+    Mediana = round(median(ing_t_p, na.rm = TRUE)),
+    Minimo = min(ing_t_p, na.rm = TRUE),
+    Maximo = max(ing_t_p, na.rm = TRUE),
+    Asimetria = round(skew(ing_t_p, na.rm = TRUE), digits = 2),
+    Curtosis = round(kurtosi(ing_t_p, na.rm = TRUE), digits = 2),
+    Desv.Estandar = round(sd(ing_t_p, na.rm = TRUE))
+  )
+
+
+estadisticas_ingresos_formateadas <- estadisticas_ingresos %>%
+  mutate(
+    Promedio = format(Promedio, scientific = FALSE),
+    Mediana = format(Mediana, scientific = FALSE),
+    Minimo = format(Minimo, scientific = FALSE),
+    Maximo = format(Maximo, scientific = FALSE),
+    Asimetria = format(Asimetria, scientific = FALSE),
+    Curtosis = format(Curtosis, scientific = FALSE),
+    Desv.Estandar = format(Desv.Estandar, scientific = FALSE)
+  )
+
+kable(estadisticas_ingresos_formateadas, caption = "Estadísticos Descriptivos de Ingresos Principales, ESI 2022")
+
+ggplot(esi_2022_ocupados, aes(x = ing_t_p)) +
+  geom_histogram(binwidth = 100000, fill = "blue", color = "black", alpha = 0.7) +
+  labs(title = "Distribución de Ingresos Principales",
+       x = "Ingresos Principales",
+       y = "Frecuencia") +
+  scale_x_continuous(labels = scales::comma_format()) +
+  theme_minimal()
+
+ggplot(esi_2022_ocupados, aes(x = ing_t_p, fill = sexo_categorias)) +
+  geom_histogram(binwidth = 100000, position = "identity", alpha = 0.6) +
+  labs(title = "Distribución de Ingresos Principales por Sexo",
+       x = "Ingresos Principales",
+       y = "Frecuencia",
+       fill = "Sexo") +
+  scale_x_continuous(labels = scales::comma_format()) +  # Formato de etiquetas con separador de miles
+  scale_fill_manual(values = palette)+
+  theme_minimal() +
+  theme(legend.position = "top")
+
+```
+
+### Edad
+
+```{r}
+
+#Nota: esi 2022 esta filtrada a máximo 3.5 millones de ingresos
+
+estadisticos_edad<- esi_2022_ocupados %>%
+  summarise(
+    Promedio = round(mean(edad, trim = 0.05, na.rm = TRUE)),
+    Mediana = round(median(edad, na.rm = TRUE)),
+    Minimo = min(edad, na.rm = TRUE),
+    Maximo = max(edad, na.rm = TRUE),
+    Asimetria = round(skew(edad ,na.rm = TRUE), digits = 2),
+    Curtosis = round(kurtosi(edad, na.rm = TRUE), digits = 2),
+    Desv.Estandar = round(sd(edad, na.rm = TRUE))
+  )
+
+kable(estadisticos_edad, caption = "Estadísticos Descriptivos de la Edad")
+
+
+ggplot(esi_2022_ocupados, aes(x = edad)) +
+  geom_histogram(binwidth = 5, fill = "lightblue", color = "white", aes(y = after_stat(count))) +
+  labs(title = "Distribución de Edades", x = "Edad", y = "Frecuencia") +
+  theme_minimal()
+```
+
+
+### Tramos de Edad
+```{r}
+
+esi_2022_ocupados <- esi_2022_ocupados %>%
+  mutate(grupos_edad = case_when(
+    tramo_edad %in% c(1:2) ~ "15 a 19 años",
+    tramo_edad %in% c(3:4) ~ "25 a 34 años",
+    tramo_edad %in% c(5:6) ~ "35 a 44 años",
+    tramo_edad %in% c(7:8) ~ "45 a 54 años",
+    tramo_edad %in% c(9:10) ~ "55 a 64 años",
+    tramo_edad %in% c(11:12) ~ "65 años o más"
+  )) %>%  filter(!is.na(grupos_edad))
+
+
+moda_grupo_edad <- names(sort(table(esi_2022_ocupados$grupos_edad), decreasing = TRUE))[1]
+
+kable(moda_grupo_edad, caption = "Moda Grupos de Edades:")
+
+orden_grupos_edad <- c("15 a 19 años", "25 a 34 años", "35 a 44 años", "45 a 54 años", "55 a 64 años", "65 años o más")
+
+esi_2022_ocupados$grupos_edad<- factor(esi_2022_ocupados$grupos_edad, levels = orden_grupos_edad)
+
+tc_tramos_edad <- table(esi_2022_ocupados$sexo_categorias, esi_2022_ocupados$grupos_edad) 
+
+tc_tramos_edad_relativa <- prop.table(tc_tramos_edad, margin = 2)
+
+tc_tramos_edad_relativa%>%
+  as.data.frame() %>%
+  mutate(Freq = scales::percent(Freq, accuracy = 0.1)) %>%
+  kable("html", col.names = c("Sexo", "Tramos de Edad", "Proporción"), align = "c") %>%
+  kable_styling(full_width = FALSE)
+
+
+
+  esi_2022_tramos_prop <- esi_2022_ocupados %>%
+  group_by(grupos_edad, sexo_categorias) %>%
+  summarise(count = n()) %>%  
+  mutate(prop = count / sum(count)) %>% 
+  ungroup()
+
+# Graficar barras apiladas
+ggplot(esi_2022_tramos_prop, aes(x = grupos_edad, y = prop, fill = sexo_categorias)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.7) +
+  geom_text(aes(label = scales::percent(prop, accuracy = 1)), 
+            position = position_dodge(width = 0.7),
+            vjust = 4,
+            size = 3, 
+            fontface = "bold",
+            color = "white") +
+  labs(title = "Distribución de Tramos de Edad por Sexo",
+       x = "Tramo de Edad",
+       y = "Proporción",
+       fill = "Sexo") +
+  scale_fill_manual(values = palette) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  theme_minimal()+
+  theme(
+  plot.background = element_rect(fill = "#F5F5F5")
+)
+
+
+```
+
+
+### Categorías de Ocupación
+```{r}
+esi_2022_ocupados <- esi_2022_ocupados %>%
+  mutate(co_categorias = case_when(
+    categoria_ocupacion == 1 ~ "Empleadores",
+    categoria_ocupacion == 2 ~ "Trabajadores por Cuenta Propia",
+    categoria_ocupacion %in% c(3, 4) ~ "Asalariados",
+    categoria_ocupacion %in% c(5, 6) ~ "Personal de Servicio Doméstico",
+    categoria_ocupacion == 7 ~ NA
+  )) %>%  filter(!is.na(co_categorias))
+
+
+ 
+moda_categorias_ocupacion <- names(sort(table(esi_2022_ocupados$co_categorias), decreasing = TRUE))[1]
+
+kable(moda_categorias_ocupacion, caption = "Categorías de Ocupación")
+
+orden_categorias_ocupacion <- c("Empleadores", "Trabajadores por Cuenta Propia", "Asalariados", "Personal de Servicio Doméstico")
+
+esi_2022_ocupados$co_categorias <- factor(esi_2022_ocupados$co_categorias, levels = orden_categorias_ocupacion)
+
+
+tc_categorias_ocupacion <- table(esi_2022_ocupados$co_categorias, esi_2022_ocupados$sexo_categorias) 
+
+tc_categorias_ocupacion_relativas <- prop.table(tc_categorias_ocupacion)
+
+
+tc_categorias_ocupacion_relativas%>%
+  as.data.frame() %>%
+  mutate(Freq = scales::percent(Freq, accuracy = 0.1)) %>%
+  kable("html", col.names = c("Categoría de Ocupación", "Sexo", "Proporción"), align = "c") %>%
+  kable_styling(full_width = FALSE)
+
+esi_2022_categorias_prop <- esi_2022_ocupados %>%
+  group_by(co_categorias, sexo_categorias) %>%
+  summarise(count = n()) %>%
+  mutate(prop = count / sum(count)) %>% 
+  ungroup()
+
+ggplot(esi_2022_categorias_prop, aes(x = co_categorias, y = prop, fill = sexo_categorias)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.7) +
+  geom_text(aes(label = scales::percent(prop, accuracy = 1)), 
+            position = position_dodge(width = 0.7),
+            vjust = 4,
+            size = 4, 
+            fontface = "bold",
+            color = "white") +
+  labs(title = "Distribución de Categorías de Ocupación por Sexo",
+       x = "Categoría de Ocupación",
+       y = "Proporción",
+       fill = "Sexo") +
+  scale_fill_manual(values = palette) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  theme_minimal()
+
+```
+
+
+###  Macrozona
+```{r}
+
+
+esi_2022_ocupados <- esi_2022_ocupados %>%
+  mutate(macrozona_categorias = case_when(
+  region %in% c(1, 15, 2) ~ "Norte Grande",
+  region %in% c(3, 4)  ~ "Norte Chico",
+  region %in% c(5, 6, 7) ~ "Centro",
+  region %in% c(13) ~ "Metropolitana",
+  region %in% c(16, 8) ~ "Centro Sur",
+  region %in% c(9, 10, 14) ~ "Sur",
+  region %in% c(11, 12) ~ "Austral"
+)) %>% filter(!is.na(macrozona_categorias))
+  
+
+moda_macrozona <- names(sort(table(esi_2022_ocupados$macrozona_categorias), decreasing = TRUE))[1]
+
+kable(moda_macrozona, caption = "Estadísticos Descriptivos de la Edad")
+
+orden_macrozona <- c("Norte Grande", "Norte Chico", "Centro", "Metropolitana", "Centro Sur", "Sur", "Austral")
+
+esi_2022_ocupados$macrozona_categorias <- factor(esi_2022_ocupados$macrozona_categorias, levels = orden_macrozona)
+
+tc_macrozona<- table(esi_2022_ocupados$macrozona_categorias, esi_2022_ocupados$sexo_categorias) 
+
+tc_macrozona_relativas <- prop.table(tc_macrozona)
+
+tc_macrozona_relativas%>%
+  as.data.frame() %>%
+  mutate(Freq = scales::percent(Freq, accuracy = 0.1)) %>%
+  kable("html", col.names = c("Macrozona", "Sexo", "Proporción"), align = "c") %>%
+  kable_styling(full_width = FALSE)
+
+esi_2022_macrozona_prop <- esi_2022_ocupados %>%
+  group_by(macrozona_categorias, sexo_categorias) %>%
+  summarise(count = n()) %>%
+  mutate(prop = count / sum(count)) %>% 
+  ungroup()
+
+ggplot(esi_2022_macrozona_prop, aes(x = macrozona_categorias, y = prop, fill = sexo_categorias)) +
+  geom_bar(stat = "identity", position = "dodge", width =  0.7) +
+  geom_text(aes(label = scales::percent(prop, accuracy = 1)), 
+            position = position_dodge(width = 0.7),
+            vjust = 4,
+            size = 3, 
+            fontface = "bold",
+            color = "white") +
+  labs(title = "Distribución según Macrozona y Sexo",
+       x = "Macrozonas",
+       y = "Proporción",
+       fill = "Sexo") +
+  scale_fill_manual(values = palette) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  theme_minimal()
+
+
+```
+
+
+### Sector Económico
+
+
+```{r}
+esi_2022_ocupados <- esi_2022_ocupados %>%
+  mutate(Sector_Economico = case_when(
+    r_p_rev4cl_caenes %in% c(1, 2) ~ "Primaria",
+    r_p_rev4cl_caenes %in% c(3, 4, 5 , 6) ~ "Secundaria",
+    r_p_rev4cl_caenes %in% c(7:21) ~ "Terciaria"
+  )) %>% filter(!is.na(Sector_Economico))
+
+moda_sector_economico <- names(sort(table(esi_2022_ocupados$Sector_Economico), decreasing = TRUE))[1]
+
+kable(moda_sector_economico, caption = "Moda Sector Económico, ESI 2022")
+
+orden_sector <- c("Primaria", "Secundaria", "Terciaria")
+
+esi_2022_ocupados$Sector_Economico <- factor(esi_2022_ocupados$Sector_Economico, levels = orden_sector)
+
+
+tc_sector_economico <- table(esi_2022_ocupados$Sector_Economico, esi_2022_ocupados$sexo_categorias) 
+
+
+tc_sector_economico_relativas <- prop.table(tc_sector_economico)
+
+
+tc_sector_economico_relativas%>%
+  as.data.frame() %>%
+  mutate(Freq = scales::percent(Freq, accuracy = 0.1)) %>%
+  kable("html", col.names = c("Sector Económico", "Sexo", "Proporción"), align = "c") %>%
+  kable_styling(full_width = FALSE)
+
+esi_2022_sector_prop <- esi_2022_ocupados %>%
+  group_by(Sector_Economico, sexo_categorias) %>%
+  summarise(count = n()) %>%
+  mutate(prop = count / sum(count)) %>% 
+  ungroup()
+
+ggplot(esi_2022_sector_prop, aes(x = Sector_Economico, y = prop, fill = sexo_categorias)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.7) +
+  geom_text(aes(label = scales::percent(prop, accuracy = 1)), 
+            position = position_dodge(width = 0.7),
+            vjust = 5,
+            size = 4, 
+            fontface = "bold",
+            color = "white") +
+  labs(title = "Distribución según Sector Económico y Sexo",
+       x = "Sectores Economicos",
+       y = "Proporción",
+       fill = "Sexo") +
+  scale_fill_manual(values = palette) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  theme_minimal()
+
+
+```
+
+
+
+
+
+# Análisis Bivariado ESI 2022
+
+Si bien la base de datos ya posee las variables a utilizar, es necesario realizar algunas recodificaciones para poder construir los gráficos
+
+### Promedio por Macrozona
+
+```{r Promedio por Macrozona}
+esi_2022_ocupados_bivariado <- esi_2022_ocupados_bivariado %>%
+  mutate(macrozona = case_when(
+  region %in% c(1, 15, 2) ~ 1,
+  region %in% c(3, 4)  ~ 2,
+  region %in% c(5, 6, 7) ~ 3,
+  region %in% c(13) ~ 4,
+  region %in% c(16, 8) ~ 5,
+  region %in% c(9, 10, 14) ~ 6,
+  region %in% c(11, 12) ~ 7
+))
+
+ocupados_hombres_2022 <- esi_2022_ocupados_bivariado %>% filter(sexo == 1)
+ocupados_mujeres_2022 <- esi_2022_ocupados_bivariado %>% filter(sexo == 2)
+
+esi_2022_ocupados_bivariado <- esi_2022_ocupados_bivariado %>%  filter(!is.na(macrozona))
+
+ingreso_mujeres_macrozona <- ocupados_mujeres_2022 %>% 
+  group_by(macrozona) %>% 
+  reframe(ingreso_medio_mujeres = mean(ing_t_p, na.rm = TRUE)) %>%  
+  ungroup()
+
+View(ingreso_mujeres_macrozona)
+  ingreso_hombres_macrozona <- ocupados_hombres_2022 %>% 
+  group_by(macrozona) %>% 
+  reframe(ingreso_medio_hombres = mean(ing_t_p, na.rm = TRUE)) %>%  
+  ungroup()
+  
+media_mujeres_macrozona <- ingreso_mujeres_macrozona$ingreso_medio_mujeres
+media_hombres_macrozona <- ingreso_hombres_macrozona$ingreso_medio_hombres
+ 
+ingreso_macrozona_hombres_miles2022 <- round(media_hombres_macrozona/ 1000)
+ingreso_macrozona_mujeres_miles2022 <- round(media_mujeres_macrozona / 1000)
+
+View(ingreso_macrozona_hombres_miles2022)
+
+brecha_genero_macrozona <- round((1- media_mujeres_macrozona/ media_hombres_macrozona) * 100, digits = 2)  
+
+
+  
+
+ingresos_por_macrozona <- data.frame(
+  Macrozona = orden_macrozona,
+  Promedio_Hombres =  ingreso_macrozona_hombres_miles2022,
+  Promedio_Mujeres = ingreso_macrozona_mujeres_miles2022,
+  Brecha_Salarial = brecha_genero_macrozona
+)
+
+
+# Definir orden personalizado de regiones
+
+orden_macrozona <- c("Norte Grande", "Norte Chico", "Centro", "Metropolitana", "Centro Sur", "Sur", "Austral")
+
+
+
+
+# Transformar los resultados en un dataframe largo para graficar
+ingreso_macrozona_long <- ingresos_por_macrozona %>%
+  pivot_longer(cols = c(Promedio_Hombres, Promedio_Mujeres), 
+               names_to = "sexo", 
+               values_to = "ingreso_medio") %>%
+  mutate(sexo = recode(sexo, 
+                       "Promedio_Hombres" = "Hombres", 
+                       "Promedio_Mujeres" = "Mujeres"))
+
+ingreso_macrozona_long$Macrozona <- factor(ingreso_macrozona_long$Macrozona, levels = orden_macrozona)
+
+ingreso_macrozona_nortegrande <- ingreso_macrozona_long %>%
+  filter(Macrozona == "Norte Grande")
+
+ggplot(ingreso_macrozona_long, aes(x = Macrozona, y = ingreso_medio, fill = sexo)) +
+    geom_bar(stat = "identity", position = "dodge") +
+  geom_text(aes(label = ingreso_medio), 
+            position = position_dodge(width = 0.9), 
+            vjust = 3.0, 
+            hjust = 0.5,
+            color = "white",
+            fontface = "bold",
+            size = 4) +
+  geom_text(data = distinct(ingreso_macrozona_long, Macrozona, .keep_all = TRUE), 
+            aes(x = Macrozona, 
+                label = paste0(Brecha_Salarial, "%")),
+            color = "#1F1B1C",
+            size = 4,
+            fontface = "italic",
+            vjust = -0.5) +
+  annotate("text", x = Inf, y = -5, label = "Brecha de Género (%)", 
+           hjust = 1.1, vjust = 2, size = 3, color = "#1F1B1C", fontface = "italic") +
+ geom_text(data = distinct(ingreso_macrozona_nortegrande, Macrozona, .keep_all = TRUE),
+            aes(label = "*"),
+            color = "red", fontface = "bold", size = 6, vjust = -0.5) +
+  labs(title = "Gráfico 5: Ingreso medio de las Personas Ocupadas, por sexo y brecha de género,
+según Macrozona, 2022",
+       x = "Grupos de Edad",
+       y = "Ingreso medio mensual (miles de pesos)",
+    caption = "Fuente: Elaboración propia en base a INE, Encuesta Suplementaria de Ingresos, 2017-2022.") +
+  scale_fill_manual(values = palette) +
+  scale_y_continuous(labels = scales::comma)+
+  theme_minimal() +
+  theme(plot.background = element_rect(fill = "#F5F5F5"),  # Cambiar el fondo a gris claro
+        panel.grid.major = element_blank(),  # Eliminar la cuadrícula mayor
+        panel.grid.minor = element_blank(),
+        panel.grid.major.y = element_line(color = "#D3D3D3"),# Eliminar la cuadrícula menor
+        plot.title = element_text(color = "#015D3F", size = 13, hjust = 0.5, face = "bold"),  # Color y tamaño del título
+        axis.text = element_text(color = "#015D3F"),  # Color de texto de los ejes
+        axis.text.x = element_text(face = "bold"),
+        axis.text.y = element_text(face = "bold"),
+        axis.title.x = element_text(color = "#015D3F", face = "bold", size = 8),  # Color de texto del eje x
+        axis.title.y = element_text(color = "#015D3F", face = "bold", size = 8),
+        legend.title = element_text(color = "#015D3F", face = "bold"),
+        legend.text = element_text(color = "#015D3F", face = "bold"),
+        plot.caption = element_text(hjust = 0, color = "#015D3F", face = "italic"))
+ 
+  
+```
+
+###Tramos de Edad
+
+```{r Promedio por tramo de edad }
+
+esi_2022_ocupados <- esi_2022_ocupados %>%
+  mutate(tramo_edad = case_when(
+    tramo_edad %in% c(1:2) ~ 1,
+    tramo_edad %in% c(3:4) ~ 2,
+    tramo_edad %in% c(5:6) ~ 3,
+    tramo_edad %in% c(7:8) ~ 4,
+    tramo_edad %in% c(9:10) ~ 5,
+    tramo_edad %in% c(11:12) ~ 6
+  )) %>% filter(!is.na(tramo_edad))
+  
+ocupados_hombres_2022 <- esi_2022_ocupados %>% filter(sexo == 1)
+
+ocupados_mujeres_2022 <- esi_2022_ocupados %>% filter(sexo == 2)
+
+ingreso_hombres_edad <- ocupados_hombres_2022 %>% 
+  group_by(tramo_edad) %>% 
+  reframe(ingreso_medio_hombres = mean(ing_t_p, na.rm = TRUE)) %>%  
+  ungroup()
+
+
+
+ingreso_mujeres_edad <- ocupados_mujeres_2022 %>% 
+  group_by(tramo_edad) %>% 
+  summarise(ingreso_medio_mujeres = mean(ing_t_p, na.rm = TRUE)) %>%  
+  ungroup()
+
+
+media_mujeres_edad <- ingreso_mujeres_edad$ingreso_medio_mujeres
+media_hombres_edad <- ingreso_hombres_edad$ingreso_medio_hombres
+ 
+ingreso_edad_hombres_miles2022 <- round(media_hombres_edad/ 1000)
+ingreso_edad_mujeres_miles2022 <- round(media_mujeres_edad / 1000)
+
+
+brecha_genero_edad <- round((1- media_mujeres_edad/ media_hombres_edad) * 100, digits = 2)
+
+orden_tramos <- c(
+  "15 a 24 años", "25 a 34 años", "35 a 44 años*", 
+  "45 a 54 años", "55 a 64 años", "65 años o más"
+)
+
+ingresos_tramos_edad <- data.frame(
+  Tramos_edad = orden_tramos,
+  Promedio_Hombres =  ingreso_edad_hombres_miles2022,
+  Promedio_Mujeres = ingreso_edad_mujeres_miles2022,
+  Brecha_Salarial = brecha_genero_edad
+)
+
+
+
+# Transformar los resultados en un dataframe largo para graficar
+ingreso_edad_long <- ingresos_tramos_edad %>%
+  pivot_longer(cols = c(Promedio_Hombres, Promedio_Mujeres), 
+               names_to = "sexo", 
+               values_to = "ingreso_medio") %>%
+  mutate(sexo = recode(sexo, 
+                       "Promedio_Hombres" = "Hombres", 
+                       "Promedio_Mujeres" = "Mujeres"))
+
+
+
+# Convertir la columna 'region' en un factor con el orden deseado
+ingreso_edad_long$Tramos_edad <- factor(ingreso_edad_long$Tramos_edad, levels = orden_tramos)
+
+ingreso_35_44 <- ingreso_edad_long %>%
+  filter(Tramos_edad == "35 a 44 años")
+
+
+ggplot(ingreso_edad_long, aes(x = Tramos_edad, y = ingreso_medio, fill = sexo)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_text(aes(label = ingreso_medio), 
+            position = position_dodge(width = 0.9), 
+            vjust = 3.0, 
+            hjust = 0.5,
+            color = "white",
+            fontface = "bold",
+            size = 3) +
+  geom_text(data = distinct(ingreso_edad_long, Tramos_edad, .keep_all = TRUE), 
+            aes(x = Tramos_edad, 
+                label = paste0(Brecha_Salarial, "%")),
+            color = "#1F1B1C",
+            size = 3,
+            fontface = "italic",
+            vjust = -0.5) +
+  annotate("text", x = Inf, y = -5, label = "Brecha de Género (%)", 
+           hjust = 1.1, vjust = 2, size = 3, color = "#1F1B1C", fontface = "italic") +
+    geom_text(data = distinct(ingreso_35_44, Tramos_edad, .keep_all = TRUE),
+            aes(label = "*"),
+            color = "red", fontface = "bold", size = 5, vjust = -0.5) +
+  labs(title = "Gráfico 5: Ingreso medio de las Personas Ocupadas, por sexo y brecha de género,
+según grupo de edad, 2022",
+       x = "Grupos de Edad",
+       y = "Ingreso medio mensual (miles de pesos)",
+    caption = "Fuente: Elaboración propia en base a INE, Encuesta Suplementaria de Ingresos, 2017-2022.") +
+  scale_fill_manual(values = palette) +
+  scale_y_continuous(labels = scales::comma)+
+  theme_minimal() +
+  theme(plot.background = element_rect(fill = "#F5F5F5"),  # Cambiar el fondo a gris claro
+        panel.grid.major = element_blank(),  # Eliminar la cuadrícula mayor
+        panel.grid.minor = element_blank(),
+        panel.grid.major.y = element_line(color = "#D3D3D3"),# Eliminar la cuadrícula menor
+        plot.title = element_text(color = "#015D3F", size = 13, hjust = 0.5, face = "bold"),  # Color y tamaño del título
+        axis.text = element_text(color = "#015D3F"),  # Color de texto de los ejes
+        axis.text.x = element_text(face = "bold"),
+        axis.text.y = element_text(face = "bold"),
+        axis.title.x = element_text(color = "#015D3F", face = "bold", size = 8),  # Color de texto del eje x
+        axis.title.y = element_text(color = "#015D3F", face = "bold", size = 8),
+        legend.title = element_text(color = "#015D3F", face = "bold"),
+        legend.text = element_text(color = "#015D3F", face = "bold"),
+        plot.caption = element_text(hjust = 0, color = "#015D3F", face = "italic"))
+
+ 
+
+```
+### Categoría Ocupación
+
+
+Se realizó un análisis bivariado que permite plantear si la diferencia de ingresos según sexo y las categorías de ocupación es significativa a través de un Análisis de Varianzas (ANOVA en inglés). Asimismo, a través del test posthoc TukeyHSD, podemos verificar qué categorías de ocupación son significativas las diferencias en detalle.
+
+Cabe destacar que el número de hombres que realizan trabajos domésticos es ínfima en comparación a las mujeres (41 vs 1044 respectivamente), por lo que su brecha de género no es representativa necesariamente de la realidad, por lo que el ANOVA también puede estar alterado, junto al TukeyHSD.
+```{r}
+
+
+esi_2022_ocupados_bivariado <- esi_2022_ocupados_bivariado %>%
+  mutate(co_categorias = case_when(
+    categoria_ocupacion == 1 ~ "Empleadores",
+    categoria_ocupacion == 2 ~ "Trabajadores por Cuenta Propia",
+    categoria_ocupacion == 3 ~ "Asalariados",
+    categoria_ocupacion == 4 ~ "Personal de Servicio Doméstico"
+  )) %>% filter(!is.na(co_categorias))
+
+
+table(esi_2022_ocupados_bivariado$co_categorias)
+
+tabla_frecuencia <- table(esi_2022_ocupados_bivariado$sexo_categorias, esi_2022_ocupados_bivariado$co_categorias)
+
+knitr::kable(tabla_frecuencia, caption = "Tabla de frecuencia de sexo vs categoría de ocupación")
+
+ocupados_hombres_2022 <- esi_2022_ocupados_bivariado %>% select(co_categorias, sexo_categorias, ing_t_p) %>% filter(sexo_categorias == "Hombres")
+ocupados_mujeres_2022 <- esi_2022_ocupados_bivariado %>% select(co_categorias, sexo_categorias, ing_t_p) %>% filter(sexo_categorias == "Mujeres")
+
+ingreso_hombres_sector <- ocupados_hombres_2022 %>% 
+  group_by(co_categorias) %>% 
+  reframe(ingreso_medio_hombres = mean(ing_t_p, na.rm = TRUE)) %>%  
+  ungroup()
+
+View(ingreso_hombres_sector)
+
+
+ingreso_mujeres_sector <- ocupados_mujeres_2022 %>% 
+  group_by(co_categorias) %>% 
+  summarise(ingreso_medio_mujeres = mean(ing_t_p, na.rm = TRUE)) %>%  
+  ungroup()
+
+
+media_mujeres_sector <- ingreso_mujeres_sector$ingreso_medio_mujeres
+media_hombres_sector <- ingreso_hombres_sector$ingreso_medio_hombres
+ 
+ingreso_sector_hombres_miles2022 <- round(media_hombres_sector/ 1000)
+ingreso_sector_mujeres_miles2022 <- round(media_mujeres_sector / 1000)
+
+
+brecha_genero_sector <- round((1- media_mujeres_sector/ media_hombres_sector) * 100, digits = 2)
+
+esi_2022_ocupados$sexo <- as.factor(esi_2022_ocupados$sexo)
+esi_2022_ocupados$categoria_ocupacion <- as.factor(esi_2022_ocupados$categoria_ocupacion)
+
+orden_sector <- c("Empleadores", "Trabajadores por Cuenta Propia", "Asalariados", "Personal de Servicio Doméstico" )
+
+esi_2022_ocupados_bivariado$co_categorias<- factor(esi_2022_ocupados_bivariado$co_categorias, levels = orden_sector)
+
+esi_2022_ocupados_bivariado$sexo_categorias <- factor(esi_2022_ocupados_bivariado$sexo_categorias)
+esi_2022_ocupados_bivariado$co_categorias <- factor(esi_2022_ocupados_bivariado$co_categorias)
+
+View(ingreso_sector_hombres_miles2022)
+
+
+# Realizar el ANOVA de dos vías
+anova_result <- aov(ing_t_p ~ sexo_categorias * co_categorias, data = esi_2022_ocupados_bivariado)
+
+# Ver los resultados del ANOVA
+anova_result
+
+# Realizar un test post-hoc si es necesario
+posthoc_result <- TukeyHSD(anova_result)
+
+# Ver los resultados del test post-hoc
+
+posthoc_result
+
+
+
+ggplot(esi_2022_ocupados_bivariado, aes(x = co_categorias, y = ing_t_p, color = sexo_categorias, group = sexo_categorias)) +
+  stat_summary(fun = mean, geom = "line") +
+  stat_summary(fun = mean, geom = "point") +
+  scale_y_continuous(labels = scales::comma)+
+  labs(title = "Interacción entre Sexo y Categoría de Ocupación en Ingresos Principales",
+       x = "Categoría de Ocupación",
+       y = "Ingresos Principales (Media)") +
+  theme_minimal()
+
+ingresos_sector <- data.frame(
+  Categorias_Ocupacion= orden_sector,
+  Promedio_Hombres =  ingreso_sector_hombres_miles2022,
+  Promedio_Mujeres = ingreso_sector_mujeres_miles2022,
+  Brecha_Salarial = brecha_genero_sector
+)
+
+
+# Definir orden personalizado de grupos de ocupacion
+
+
+ingreso_sector_long <- ingresos_sector %>%
+  pivot_longer(cols = c(Promedio_Hombres, Promedio_Mujeres), 
+               names_to = "sexo", 
+               values_to = "ingreso_medio") %>%
+  mutate(sexo = recode(sexo, 
+                       "Promedio_Hombres" = "Hombres", 
+                       "Promedio_Mujeres" = "Mujeres"))
+
+ingreso_sector_long$Categorias_Ocupacion <- factor(ingreso_sector_long$Categorias_Ocupacion, levels = orden_sector)
+
+ingreso_sector_domesticos <- ingreso_sector_long %>%
+  filter(Categorias_Ocupacion == "Personal de Servicio Doméstico")
+
+ingreso_sector_cuentapropia <- ingreso_sector_long %>%
+  filter(Categorias_Ocupacion == "Trabajadores por Cuenta Propia")
+
+ggplot(ingreso_sector_long, aes(x = Categorias_Ocupacion, y = ingreso_medio, fill = sexo)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_text(aes(label = ingreso_medio), 
+            position = position_dodge(width = 0.9), 
+            vjust = 3.0, 
+            hjust = 0.5,
+            color = "white",
+            fontface = "bold",
+            size = 3) +
+  geom_text(data = distinct(ingreso_sector_long, Categorias_Ocupacion, .keep_all = TRUE), 
+            aes(x = Categorias_Ocupacion, 
+                label = paste0(Brecha_Salarial, "%")),
+            color = "#1F1B1C",
+            size = 3,
+            fontface = "italic",
+            vjust = -0.5) +
+  annotate("text", x = Inf, y = -5, label = "Brecha de Género (%)", 
+           hjust = 1.1, vjust = 2, size = 3, color = "#1F1B1C", fontface = "italic") +
+  geom_text(data = distinct(ingreso_sector_cuentapropia, Categorias_Ocupacion, .keep_all = TRUE),
+            aes(label = "*"),
+            color = "red", fontface = "bold", size = 6, vjust = -0.5) +
+  geom_text(data = distinct(ingreso_sector_domesticos, Categorias_Ocupacion, .keep_all = TRUE),
+            aes(label = "*"),
+            color = "black", fontface = "bold", size = 6, vjust = -0.5) +
+  labs(title = "Ingreso medio de las Personas Ocupadas, por sexo y brecha de género, según categoría en la Ocupación, 2022",
+       x = "Categoria de Ocupación",
+       y = "Ingreso medio mensual (miles de pesos)",
+    caption = "Fuente: Elaboración propia en base a INE, Encuesta Suplementaria de Ingresos, 2017-2022.") +
+  scale_fill_manual(values = palette) +
+  scale_y_continuous(labels = scales::comma)+
+  theme_minimal() +
+  theme(plot.background = element_rect(fill = "#F5F5F5"),  # Cambiar el fondo a gris claro
+        panel.grid.major = element_blank(),  # Eliminar la cuadrícula mayor
+        panel.grid.minor = element_blank(),
+        panel.grid.major.y = element_line(color = "#D3D3D3"),# Eliminar la cuadrícula menor
+        plot.title = element_text(color = "#015D3F", size = 13, hjust = 0.5, face = "bold"),  # Color y tamaño del título
+        axis.text = element_text(color = "#015D3F"),  # Color de texto de los ejes
+        axis.text.x = element_text(face = "bold"),
+        axis.text.y = element_text(face = "bold"),
+        axis.title.x = element_text(color = "#015D3F", face = "bold", size = 8),  # Color de texto del eje x
+        axis.title.y = element_text(color = "#015D3F", face = "bold", size = 8),
+        legend.title = element_text(color = "#015D3F", face = "bold"),
+        legend.text = element_text(color = "#015D3F", face = "bold"),
+        plot.caption = element_text(hjust = 0, color = "#015D3F", face = "italic"))
+
+
+```
+
+
+
+# Evolución 2017-2022
+
+Calculamos los promedios entre los años 2017 y 2022 de ingresos principales. Asimismo, verificamos si las diferencias según sexo son estadísticamente significativas
+
+Rechazamos que no existe diferencia significativa en los ingresos medios entre hombres y mujeres (H0) en cada uno de los dataframes, por lo tanto, aceptamos que la diferencia sí es significativa (H1). Los intervalos de confianza no incluyen cero, lo cual refuerza la significancia. 
+
+### Ingresos Medios
+
+```{r Gráfico 1}
+
+
+
+promedio_ingreso_hombres <- sapply(ocupados_hombres_list, function(df) {
+  round(mean(df$ing_t_p, na.rm = TRUE ))
+})
+
+
+promedio_ingreso_mujeres <- sapply(ocupados_mujeres_list, function(df) {
+  round(mean(df$ing_t_p, na.rm = TRUE)) 
+})
+
+#En miles
+
+promedios_ingresos <- data.frame(
+  Año = años,
+  Hombres = promedio_ingreso_hombres,
+  Mujeres = promedio_ingreso_mujeres
+)
+
+
+promedio_ingreso_hombres_miles <- round(promedio_ingreso_hombres / 1000)
+
+promedio_ingreso_mujeres_miles <- round(promedio_ingreso_mujeres / 1000)
+
+
+resultados_ttest <- lapply(1:6, function(i) {
+  t.test(ocupados_hombres_list[[i]]$ing_t_p, 
+         ocupados_mujeres_list[[i]]$ing_t_p, 
+         alternative = "two.sided", 
+         var.equal = FALSE, 
+         na.rm = TRUE)
+})
+
+format_p_value <- function(p, digits = 4, eps = .Machine$double.eps) {
+  if (p < eps) {
+    return(sprintf("< %.0e", eps))
+  } else {
+    return(format(p, digits = digits, scientific = FALSE))
+  }
+}
+
+extraer_resultados <- function(test) {
+  c(Estadístico_t = round(test$statistic, 2), 
+    Valor_p = format_p_value(test$p.value, digits = 4, eps = .Machine$double.eps),
+    Media_Hombres = round(test$estimate[1], 2),
+    Media_Mujeres = round(test$estimate[2], 2),
+    IC_Lower = round(test$conf.int[1], 2),
+    IC_Upper = round(test$conf.int[2], 2))
+}
+
+# Aplicar la función a los resultados de la prueba t
+resumen_resultados <- do.call(rbind, lapply(resultados_ttest, extraer_resultados))
+
+# Añadir una columna de categoría para identificar cada par de dataframes
+resumen_resultados <- data.frame(Categoria = 1:6, resumen_resultados)
+
+resumen_resultados %>%
+  kable(caption = "Resultados de la Prueba t por Categoría") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+
+# Mostrar el dataframe con los resultados
+
+
+#Brecha de ingresos media
+
+
+brecha_genero_promedios <- round((1- promedio_ingreso_mujeres / promedio_ingreso_hombres) * 100, digits = 2)
+# Crear gráfico de barras para promedio de ingresos
+promedio_ingreso_miles <- data.frame(
+  Año = años,
+  Promedio_Hombres = promedio_ingreso_hombres_miles,
+  Promedio_Mujeres = promedio_ingreso_mujeres_miles,
+  Brecha_Salarial = brecha_genero_promedios
+)
+
+palette <- c("#4DAF4A", "#377EB8")
+
+promedio_long <- promedio_ingreso_miles %>%
+  pivot_longer(cols = c(Promedio_Hombres, Promedio_Mujeres),
+               names_to = "Sexo",
+               values_to = "Promedio")
+
+promedio_long$Sexo <- gsub("Promedio_Hombres", "Hombres", promedio_long$Sexo)
+promedio_long$Sexo <- gsub("Promedio_Mujeres", "Mujeres", promedio_long$Sexo)
+
+
+ggplot(promedio_long, aes(x = factor(Año), y = Promedio, fill = Sexo)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_text(aes(label = Promedio), 
+            position = position_dodge(width = 0.9), 
+            vjust = 3.0, 
+            hjust = 0.5,
+            color = "white",
+            fontface = "bold",
+            size = 3) +
+  geom_text(data = distinct(promedio_long, Año, .keep_all = TRUE), 
+            aes(x = factor(Año), 
+                label = paste0(Brecha_Salarial, "%")),
+            color = "white",
+            size = 3,
+            fontface = "bold",
+            vjust = 20) +
+  annotate("text", x = Inf, y = -5, label = "Brecha Salarial (%)", 
+           hjust = 1.1, vjust = 2, size = 3, color = "#1F1B1C", fontface = "italic") +
+  labs(title = "Gráfico 1: Ingreso medio de las Personas Ocupadas, por sexo y brecha de género, 2017-2022 (miles de pesos a octubre 2022)",
+       x = "Año",
+       y = "Promedio en miles de pesos",
+       caption = "Fuente: INE, Encuesta Suplementaria de Ingresos, 2017-2022.") +
+  scale_fill_manual(values = palette) +
+  scale_y_continuous(labels = scales::comma ) +
+  theme_minimal() +
+  theme(plot.background = element_rect(fill = "#F5F5F5"),  # Cambiar el fondo a gris claro
+        panel.grid.major = element_blank(),  # Eliminar la cuadrícula mayor
+        panel.grid.minor = element_blank(),  # Eliminar la cuadrícula menor
+        plot.title = element_text(color = "#015D3F", size = 11, hjust = 0.5, face = "bold"),  # Color y tamaño del título
+        axis.text = element_text(color = "#015D3F"),  # Color de texto de los ejes
+        axis.text.x = element_text(face = "bold"),
+        axis.text.y = element_text(face = "bold"),
+        axis.title.x = element_text(color = "#015D3F", face = "bold"),  # Color de texto del eje x
+        axis.title.y = element_text(color = "#015D3F", face = "bold"),  # Color de texto del eje x
+        legend.title = element_text(color = "#015D3F", face = "bold"),  #League of Legends texto y titulo
+        legend.text = element_text(color = "#015D3F", face = "bold"),
+        plot.caption = element_text(hjust = 0, color = "#015D3F", face = "italic"))
+
+```
+
+### Ingresos Medianos
+En graficar_promedios, se visualizan los promedios de ingresos principales por año y sexo mediante un gráfico de barras. Esto facilita la comparación visual entre los ingresos medios de hombres y mujeres a lo largo de los años estudiados.
+
+```{r Medianas y Grafico 2}
+mediana_ingreso_hombres <- sapply(ocupados_hombres_list, function(df) {
+  round(median(df$ing_t_p, na.rm = TRUE))
+})
+
+mediana_ingreso_mujeres <- sapply(ocupados_mujeres_list, function(df) {
+  round(median(df$ing_t_p, na.rm = TRUE))
+})
+
+#En miles de pesos
+
+mediana_ingreso_hombres_miles <- round(mediana_ingreso_hombres / 1000)
+  
+mediana_ingreso_mujeres_miles <- round(mediana_ingreso_mujeres / 1000)
+
+brecha_genero_medianas <- round((1- mediana_ingreso_mujeres / mediana_ingreso_hombres) * 100, digits = 2)  
+
+mediana_ingreso <- data.frame(
+  Año = años,
+  Mediana_Hombres = mediana_ingreso_hombres_miles,
+  Mediana_Mujeres = mediana_ingreso_mujeres_miles,
+  Brecha_Genero = brecha_genero_medianas
+)
+
+mediana_long <- mediana_ingreso %>%
+  pivot_longer(cols = c(Mediana_Hombres, Mediana_Mujeres),
+               names_to = "Sexo",
+               values_to = "Mediana")
+
+
+mediana_long$Sexo <- gsub("Mediana_Hombres", "Hombres", mediana_long$Sexo)
+mediana_long$Sexo <- gsub("Mediana_Mujeres", "Mujeres", mediana_long$Sexo)
+
+palette <- c("#4DAF4A", "#377EB8")
+
+ggplot(mediana_long, aes(x = factor(Año), y = Mediana, fill = Sexo)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_text(aes(label = Mediana), 
+            position = position_dodge(width = 0.9), 
+            vjust = 3.0, 
+            hjust = 0.5,
+            color = "white",
+            fontface = "bold",
+            size = 3) +
+  geom_text(data = distinct(mediana_long, Año, .keep_all = TRUE), 
+            aes(x = factor(Año), 
+                label = paste0(Brecha_Genero, "%")),
+            color = "white",
+            size = 3,
+            fontface = "bold",
+            vjust = 20) +
+  annotate("text", x = Inf, y = -5, label = "Brecha de Género (%)", 
+           hjust = 1.1, vjust = 2, size = 3, color = "#1F1B1C", fontface = "italic") +
+  labs(title = "Gráfico 2:Ingreso mediano de las Personas Ocupadas, por sexo y brecha de género,
+2017-2022 (miles de pesos a octubre 2022)",
+       x = "Años",
+       y = "Ingreso Mediano Mensual (en miles de pesos)",
+    caption = "Fuente: INE, Encuesta Suplementaria de Ingresos, 2017-2022.") +
+  scale_fill_manual(values = palette) +
+  scale_y_continuous(labels = scales::comma)+
+  theme_minimal() +
+  theme(plot.background = element_rect(fill = "#F5F5F5"),  # Cambiar el fondo a gris claro
+        panel.grid.major = element_blank(),  # Eliminar la cuadrícula mayor
+        panel.grid.minor = element_blank(),
+        panel.grid.major.y = element_line(color = "#D3D3D3"),# Eliminar la cuadrícula menor
+        plot.title = element_text(color = "#015D3F", size = 13, hjust = 0.5, face = "bold"),  # Color y tamaño del título
+        axis.text = element_text(color = "#015D3F"),  # Color de texto de los ejes
+        axis.text.x = element_text(face = "bold"),
+        axis.text.y = element_text(face = "bold"),
+        axis.title.x = element_text(color = "#015D3F", face = "bold", size = 8),  # Color de texto del eje x
+        axis.title.y = element_text(color = "#015D3F", face = "bold", size = 8),
+        legend.title = element_text(color = "#015D3F", face = "bold"),
+        legend.text = element_text(color = "#015D3F", face = "bold"),
+        plot.caption = element_text(hjust = 0, color = "#015D3F", face = "italic"))
+```
+
+En calcular_medianas, se calculan las medianas de ingresos para hombres y mujeres en cada año. Este análisis proporciona una medida robusta de la distribución central de los ingresos, complementando los resultados obtenidos con los promedios. Además, se calcula la brecha salarial por género utilizando las medianas, ofreciendo una perspectiva adicional sobre la igualdad salarial.
+
+### Ingresos por hora
+
+```{r}
+
+ingreso_mujeres_hora <- sapply(ocupados_mujeres_list_asalariados, function(df) {
+  round(mean(df$ingreso_hora, na.rm = TRUE))
+})
+
+
+ingreso_hombres_hora <- sapply(ocupados_hombres_list_asalariados, function(df) {
+  round(mean(df$ingreso_hora, na.rm = TRUE))
+})
+
+brecha_genero_hora <- round((1- ingreso_mujeres_hora / ingreso_hombres_hora) * 100, digits = 2)
+
+
+ingreso_por_hora <- data.frame(
+  Año = años,
+  Ingreso_Por_Hora_Mujeres = ingreso_mujeres_hora,
+  Ingreso_Por_Hora_Hombres = ingreso_hombres_hora,
+  Brecha_Genero = brecha_genero_hora
+)
+
+ingreso_por_hora_long <- ingreso_por_hora %>%
+  pivot_longer(cols = c(Ingreso_Por_Hora_Mujeres, Ingreso_Por_Hora_Hombres),
+               names_to = "Sexo",
+               values_to = "Ingreso_Por_Hora")
+
+
+ingreso_por_hora_long$Sexo <- gsub("Ingreso_Por_Hora_Hombres", "Hombres", ingreso_por_hora_long$Sexo)
+ingreso_por_hora_long$Sexo <- gsub("Ingreso_Por_Hora_Mujeres", "Mujeres", ingreso_por_hora_long$Sexo)
+
+palette <- c("#4DAF4A", "#377EB8")
+
+ggplot(ingreso_por_hora_long, aes(x = factor(Año), y = Ingreso_Por_Hora, fill = Sexo)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_text(aes(label = Ingreso_Por_Hora), 
+            position = position_dodge(width = 0.9), 
+            vjust = 3.0, 
+            hjust = 0.5,
+            color = "white",
+            fontface = "bold",
+            size = 3) +
+  geom_text(data = distinct(ingreso_por_hora_long, Año, .keep_all = TRUE), 
+            aes(x = factor(Año), 
+                label = paste0(Brecha_Genero, "%")),
+            color = "white",
+            size = 3,
+            fontface = "bold",
+            vjust = 20) +
+  annotate("text", x = Inf, y = -5, label = "Brecha de Género (%)", 
+           hjust = 1.1, vjust = 2, size = 3, color = "#1F1B1C", fontface = "italic") +
+  labs(title = "Gráfico 4: Ingreso por hora de las Personas Asalariadas, por sexo y brecha de género,
+ 2017-2022 (pesos a octubre 2022)",
+       x = "Años",
+       y = "Ingreso Medio por hora",
+    caption = "Fuente: Elaboración propia en base a INE, Encuesta Suplementaria de Ingresos, 2017-2022.") +
+  scale_fill_manual(values = palette) +
+  scale_y_continuous(labels = scales::comma)+
+  theme_minimal() +
+  theme(plot.background = element_rect(fill = "#F5F5F5"),  # Cambiar el fondo a gris claro
+        panel.grid.major = element_blank(),  # Eliminar la cuadrícula mayor
+        panel.grid.minor = element_blank(),
+        panel.grid.major.y = element_line(color = "#D3D3D3"),# Eliminar la cuadrícula menor
+        plot.title = element_text(color = "#015D3F", size = 13, hjust = 0.5, face = "bold"),  # Color y tamaño del título
+        axis.text = element_text(color = "#015D3F"),  # Color de texto de los ejes
+        axis.text.x = element_text(face = "bold"),
+        axis.text.y = element_text(face = "bold"),
+        axis.title.x = element_text(color = "#015D3F", face = "bold", size = 8),  # Color de texto del eje x
+        axis.title.y = element_text(color = "#015D3F", face = "bold", size = 8),
+        legend.title = element_text(color = "#015D3F", face = "bold"),
+        legend.text = element_text(color = "#015D3F", face = "bold"),
+        plot.caption = element_text(hjust = 0, color = "#015D3F", face = "italic"))
+
+
+```
+
+
